@@ -12,6 +12,8 @@ library(shiny)
 library(shinyjqui)
 library(tidyverse)
 
+
+
 # Define UI for application
 ui <- fluidPage(
   tags$head(
@@ -45,12 +47,12 @@ ui <- fluidPage(
   ),
   fluidRow(
     column(6, 
-           h3("Calls to be made - (destination)"),
+           h3("HTA outcomes files - destination"),
            div(style = "height: 800px; overflow-y: scroll; overflow-x: scroll;", tableOutput("calls_to_be_made"))
     ),
     column(6, 
-           h3("Callers - (source)"),
-           textInput("search_callers", "Search Callers", ""),
+           h3("MA files - source"),
+           textInput("search_callers", "Search MA", ""),
            div(style = "height: 800px; overflow-y: scroll; overflow-x: scroll;", tableOutput("callers"))
     )
   )
@@ -164,3 +166,837 @@ Whats next?
 - add ability to remove id from the raw
 - change layout, so the search box is higher
 - change data + use EMA for all years 
+
+
+```{r COLOR changes working}
+
+library(shiny)
+library(shinyjqui)
+library(tidyverse)
+
+# Define UI for application
+ui <- fluidPage(
+  tags$head(
+    tags$style(HTML("
+      table th:nth-child(1), table td:nth-child(1),
+      table th:nth-child(2), table td:nth-child(2),
+      table th:nth-child(3), table td:nth-child(3),
+      table th:nth-child(4), table td:nth-child(4) {
+        width: 100px;
+        max-width: 100px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .highlighted {
+        background-color: #90EE90 !important;
+      }
+    "))
+  ),
+  titlePanel("UI functionality: Drop-on table"),
+  fluidRow(
+    column(4,
+           fileInput("calls_to_be_made_file", "Choose Calls to Be Made CSV File",
+                     accept = c("text/csv", "text/comma-separated-values,text/plain", ".csv"))
+    ),
+    column(4,
+           fileInput("callers_file", "Choose Callers CSV File",
+                     accept = c("text/csv", "text/comma-separated-values,text/plain", ".csv"))
+    ),
+    column(4,
+           downloadButton("downloadData", "Download Resulting Data")
+    ),
+    style = "height: 100px;"  # Adjust height as needed
+  ),
+  fluidRow(
+    column(6, 
+           h3("HTA outcomes files - destination"),
+           div(style = "height: 800px; overflow-y: scroll; overflow-x: scroll;", uiOutput("calls_to_be_made_ui"))
+    ),
+    column(6, 
+           h3("MA files - source"),
+           textInput("search_callers", "Search MA", ""),
+           div(style = "height: 800px; overflow-y: scroll; overflow-x: scroll;", tableOutput("callers"))
+    )
+  )
+)
+
+# Define server logic
+server <- function(input, output, session) {
+  # Reactive values to store the data frames
+  callers <- reactiveVal()
+  calls_to_be_made <- reactiveVal()
+  calls_to_be_made_react <- reactiveVal()
+
+  # Observe file inputs and load data
+  observe({
+    req(input$callers_file)
+    callers(read.csv(input$callers_file$datapath, stringsAsFactors = FALSE))
+  })
+
+  observe({
+    req(input$calls_to_be_made_file)
+    data <- read.csv(input$calls_to_be_made_file$datapath, stringsAsFactors = FALSE)
+    if (!"Caller_id" %in% colnames(data)) {
+      data$Caller_id <- NA
+    }
+    calls_to_be_made(data)
+    calls_to_be_made_react(data)
+  })
+
+  # Filtered data for search functionality
+  filtered_callers <- reactive({
+    req(callers())
+    if (input$search_callers == "") return(callers())
+    callers() %>% 
+      filter_all(any_vars(grepl(input$search_callers, ., ignore.case = TRUE)))
+  })
+
+  filtered_calls_to_be_made <- reactive({
+    req(calls_to_be_made())
+    calls_to_be_made_react()
+  })
+
+  # Initialize draggable and droppable
+  observe({
+    req(filtered_callers(), filtered_calls_to_be_made())
+    jqui_draggable(
+      ui = "#callers td:nth-child(1)",
+      options = list(
+        revert = "invalid",
+        helper = "clone"
+      )
+    )
+    jqui_droppable(
+      ui = "#calls_to_be_made td",
+      options = list(
+        accept = ":not(.ui-state-disabled)",  # Only accept elements that are not disabled
+        drop = JS("function(event, ui) {
+                     var source_row = ui.draggable.parent().index();
+                     var dest_row = $(this).parent().index();
+                     Shiny.setInputValue('update_cells', {
+                       source_row: source_row + 1,
+                       dest_row: dest_row + 1
+                     }, {priority: 'event'});
+                   }")
+      )
+    )
+  })
+
+  observeEvent(input$update_cells, {
+    if (!is.null(input$update_cells)) {  # Ensure valid drop
+      updated_ctbm <- calls_to_be_made_react()
+      source_row <- input$update_cells$source_row
+      dest_row <- input$update_cells$dest_row
+
+      # Append the id to the right of the destination row
+      updated_ctbm[dest_row, "Caller_id"] <- filtered_callers()[source_row, 1]
+
+      calls_to_be_made_react(updated_ctbm)
+    }
+  })
+
+  output$callers <- renderTable({
+    req(filtered_callers())
+    filtered_callers()
+  }, rownames = FALSE)
+
+  output$calls_to_be_made_ui <- renderUI({
+    df <- filtered_calls_to_be_made()
+    if (is.null(df)) return(NULL)
+
+    tableHTML <- "<table class='dataframe' id='calls_to_be_made'><thead><tr>"
+    for (col in colnames(df)) {
+      tableHTML <- paste0(tableHTML, "<th>", col, "</th>")
+    }
+    tableHTML <- paste0(tableHTML, "</tr></thead><tbody>")
+
+    for (i in 1:nrow(df)) {
+      rowClass <- if (!is.na(df[i, "Caller_id"]) && df[i, "Caller_id"] != "") "highlighted" else ""
+      tableHTML <- paste0(tableHTML, "<tr class='", rowClass, "'>")
+      for (col in colnames(df)) {
+        tableHTML <- paste0(tableHTML, "<td>", df[i, col], "</td>")
+      }
+      tableHTML <- paste0(tableHTML, "</tr>")
+    }
+
+    tableHTML <- paste0(tableHTML, "</tbody></table>")
+    HTML(tableHTML)
+  })
+
+  # Download handler
+  output$downloadData <- downloadHandler(
+    filename = function() {
+      paste("resulting_data-", Sys.Date(), ".csv", sep = "")
+    },
+    content = function(file) {
+      write.csv(calls_to_be_made_react(), file, row.names = FALSE)
+    }
+  )
+}
+
+# Run the application
+shinyApp(ui, server)
+
+
+```
+```{r green colors but faster}
+
+library(shiny)
+library(shinyjqui)
+library(tidyverse)
+
+# Define UI for application
+ui <- fluidPage(
+  tags$head(
+    tags$style(HTML("
+      table th:nth-child(1), table td:nth-child(1),
+      table th:nth-child(2), table td:nth-child(2),
+      table th:nth-child(3), table td:nth-child(3),
+      table th:nth-child(4), table td:nth-child(4) {
+        width: 100px;
+        max-width: 100px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .highlighted {
+        background-color: #90EE90 !important;
+      }
+    "))
+  ),
+  titlePanel("UI functionality: Drop-on table"),
+  fluidRow(
+    column(4,
+           fileInput("calls_to_be_made_file", "Choose Calls to Be Made CSV File",
+                     accept = c("text/csv", "text/comma-separated-values,text/plain", ".csv"))
+    ),
+    column(4,
+           fileInput("callers_file", "Choose Callers CSV File",
+                     accept = c("text/csv", "text/comma-separated-values,text/plain", ".csv"))
+    ),
+    column(4,
+           downloadButton("downloadData", "Download Resulting Data")
+    ),
+    style = "height: 100px;"  # Adjust height as needed
+  ),
+  fluidRow(
+    column(6, 
+           h3("HTA outcomes files - destination"),
+           div(style = "height: 800px; overflow-y: scroll; overflow-x: scroll;", uiOutput("calls_to_be_made_ui"))
+    ),
+    column(6, 
+           h3("MA files - source"),
+           textInput("search_callers", "Search MA", ""),
+           div(style = "height: 800px; overflow-y: scroll; overflow-x: scroll;", tableOutput("callers"))
+    )
+  )
+)
+
+# Define server logic
+server <- function(input, output, session) {
+  # Reactive values to store the data frames
+  callers <- reactiveVal()
+  calls_to_be_made <- reactiveVal()
+  calls_to_be_made_react <- reactiveVal()
+
+  # Observe file inputs and load data
+  observe({
+    req(input$callers_file)
+    callers(read.csv(input$callers_file$datapath, stringsAsFactors = FALSE))
+  })
+
+  observe({
+    req(input$calls_to_be_made_file)
+    data <- read.csv(input$calls_to_be_made_file$datapath, stringsAsFactors = FALSE)
+    if (!"Caller_id" %in% colnames(data)) {
+      data$Caller_id <- NA
+    }
+    calls_to_be_made(data)
+    calls_to_be_made_react(data)
+  })
+
+  # Filtered data for search functionality
+  filtered_callers <- reactive({
+    req(callers())
+    if (input$search_callers == "") return(callers())
+    callers() %>% 
+      filter_all(any_vars(grepl(input$search_callers, ., ignore.case = TRUE)))
+  })
+
+  filtered_calls_to_be_made <- reactive({
+    req(calls_to_be_made())
+    calls_to_be_made_react()
+  })
+
+  # Initialize draggable and droppable
+  observe({
+    req(filtered_callers(), filtered_calls_to_be_made())
+    jqui_draggable(
+      ui = "#callers td:nth-child(1)",
+      options = list(
+        revert = "invalid",
+        helper = "clone"
+      )
+    )
+    jqui_droppable(
+      ui = "#calls_to_be_made td",
+      options = list(
+        accept = ":not(.ui-state-disabled)",  # Only accept elements that are not disabled
+        drop = JS("function(event, ui) {
+                     var source_row = ui.draggable.parent().index();
+                     var dest_row = $(this).parent().index();
+                     Shiny.setInputValue('update_cells', {
+                       source_row: source_row + 1,
+                       dest_row: dest_row + 1
+                     }, {priority: 'event'});
+                   }")
+      )
+    )
+  })
+
+  observeEvent(input$update_cells, {
+    if (!is.null(input$update_cells)) {  # Ensure valid drop
+      updated_ctbm <- calls_to_be_made_react()
+      source_row <- input$update_cells$source_row
+      dest_row <- input$update_cells$dest_row
+
+      # Append the id to the right of the destination row
+      updated_ctbm[dest_row, "Caller_id"] <- filtered_callers()[source_row, 1]
+
+      calls_to_be_made_react(updated_ctbm)
+    }
+  })
+
+  output$callers <- renderTable({
+    req(filtered_callers())
+    filtered_callers()
+  }, rownames = FALSE)
+
+  output$calls_to_be_made_ui <- renderUI({
+    df <- filtered_calls_to_be_made()
+    if (is.null(df)) return(NULL)
+
+    tableHTML <- tagList(
+      tags$table(
+        class = 'dataframe',
+        id = 'calls_to_be_made',
+        tags$thead(
+          tags$tr(lapply(names(df), tags$th))
+        ),
+        tags$tbody(
+          lapply(1:nrow(df), function(i) {
+            rowClass <- if (!is.na(df[i, "Caller_id"]) && df[i, "Caller_id"] != "") "highlighted" else ""
+            tags$tr(
+              class = rowClass,
+              lapply(df[i, ], tags$td)
+            )
+          })
+        )
+      )
+    )
+    tableHTML
+  })
+
+  # Download handler
+  output$downloadData <- downloadHandler(
+    filename = function() {
+      paste("resulting_data-", Sys.Date(), ".csv", sep = "")
+    },
+    content = function(file) {
+      write.csv(calls_to_be_made_react(), file, row.names = FALSE)
+    }
+  )
+}
+
+# Run the application
+shinyApp(ui, server)
+
+
+
+```
+```{r separating lines added}
+
+#but green color stoped working
+
+library(shiny)
+library(shinyjqui)
+library(tidyverse)
+
+# Define UI for application
+ui <- fluidPage(
+  tags$head(
+    tags$style(HTML("
+      table {
+        border-collapse: collapse;
+      }
+      table th, table td {
+        border: 1px solid #ddd;
+        padding: 8px;
+      }
+      .highlighted {
+        background-color: #90EE90 !important;
+      }
+    "))
+  ),
+  titlePanel("UI functionality: Drop-on table"),
+  fluidRow(
+    column(4,
+           fileInput("calls_to_be_made_file", "Choose Calls to Be Made CSV File",
+                     accept = c("text/csv", "text/comma-separated-values,text/plain", ".csv"))
+    ),
+    column(4,
+           fileInput("callers_file", "Choose Callers CSV File",
+                     accept = c("text/csv", "text/comma-separated-values,text/plain", ".csv"))
+    ),
+    column(4,
+           downloadButton("downloadData", "Download Resulting Data")
+    ),
+    style = "height: 100px;"  # Adjust height as needed
+  ),
+  fluidRow(
+    column(6, 
+           h3("HTA outcomes files - destination"),
+           div(style = "height: 800px; overflow-y: scroll; overflow-x: scroll;", tableOutput("calls_to_be_made"))
+    ),
+    column(6, 
+           h3("MA files - source"),
+           textInput("search_callers", "Search MA", ""),
+           div(style = "height: 800px; overflow-y: scroll; overflow-x: scroll;", tableOutput("callers"))
+    )
+  )
+)
+
+# Define server logic
+server <- function(input, output, session) {
+  # Reactive values to store the data frames
+  callers <- reactiveVal()
+  calls_to_be_made <- reactiveVal()
+  calls_to_be_made_react <- reactiveVal()
+
+  # Observe file inputs and load data
+  observe({
+    req(input$callers_file)
+    callers(read.csv(input$callers_file$datapath, stringsAsFactors = FALSE))
+  })
+
+  observe({
+    req(input$calls_to_be_made_file)
+    data <- read.csv(input$calls_to_be_made_file$datapath, stringsAsFactors = FALSE)
+    if (!"Caller_id" %in% colnames(data)) {
+      data$Caller_id <- NA
+    }
+    calls_to_be_made(data)
+    calls_to_be_made_react(data)
+  })
+
+  # Filtered data for search functionality
+  filtered_callers <- reactive({
+    req(callers())
+    if (input$search_callers == "") return(callers())
+    callers() %>% 
+      filter_all(any_vars(grepl(input$search_callers, ., ignore.case = TRUE)))
+  })
+
+  filtered_calls_to_be_made <- reactive({
+    req(calls_to_be_made())
+    calls_to_be_made_react()
+  })
+
+  # Initialize draggable and droppable
+  observe({
+    req(filtered_callers(), filtered_calls_to_be_made())
+    jqui_draggable(
+      ui = "#callers td:nth-child(1)",
+      options = list(
+        revert = "invalid",
+        helper = "clone"
+      )
+    )
+    jqui_droppable(
+      ui = "#calls_to_be_made td",
+      options = list(
+        accept = ":not(.ui-state-disabled)",  # Only accept elements that are not disabled
+        drop = JS("function(event, ui) {
+                     var source_row = ui.draggable.parent().index();
+                     var dest_row = $(this).parent().index();
+                     Shiny.setInputValue('update_cells', {
+                       source_row: source_row + 1,
+                       dest_row: dest_row + 1
+                     }, {priority: 'event'});
+                   }")
+      )
+    )
+  })
+
+  observeEvent(input$update_cells, {
+    if (!is.null(input$update_cells)) {  # Ensure valid drop
+      updated_ctbm <- calls_to_be_made_react()
+      source_row <- input$update_cells$source_row
+      dest_row <- input$update_cells$dest_row
+
+      # Append the id to the right of the destination row
+      updated_ctbm[dest_row, "Caller_id"] <- filtered_callers()[source_row, 1]
+
+      calls_to_be_made_react(updated_ctbm)
+    }
+  })
+
+  output$callers <- renderTable({
+    req(filtered_callers())
+    filtered_callers()
+  }, rownames = FALSE)
+
+  output$calls_to_be_made <- renderTable({
+    req(filtered_calls_to_be_made())
+    filtered_calls_to_be_made()
+  }, rownames = FALSE, sanitize.text.function = function(x) x, 
+  sanitize.text = TRUE)
+
+  # Download handler
+  output$downloadData <- downloadHandler(
+    filename = function() {
+      paste("resulting_data-", Sys.Date(), ".csv", sep = "")
+    },
+    content = function(file) {
+      write.csv(calls_to_be_made_react(), file, row.names = FALSE)
+    }
+  )
+}
+
+# Run the application
+shinyApp(ui, server)
+
+```
+
+```{r}
+# works well but creates this udeless .highlight column at the end
+
+library(shiny)
+library(shinyjqui)
+library(tidyverse)
+
+# Define UI for application
+ui <- fluidPage(
+  tags$head(
+    tags$style(HTML("
+      table {
+        border-collapse: collapse;
+      }
+      table th, table td {
+        border: 1px solid #ddd;
+        padding: 8px;
+        text-align: left;
+      }
+      .highlighted {
+        background-color: #90EE90 !important;
+      }
+    "))
+  ),
+  titlePanel("UI functionality: Drop-on table"),
+  fluidRow(
+    column(4,
+           fileInput("calls_to_be_made_file", "Choose Calls to Be Made CSV File",
+                     accept = c("text/csv", "text/comma-separated-values,text/plain", ".csv"))
+    ),
+    column(4,
+           fileInput("callers_file", "Choose Callers CSV File",
+                     accept = c("text/csv", "text/comma-separated-values,text/plain", ".csv"))
+    ),
+    column(4,
+           downloadButton("downloadData", "Download Resulting Data")
+    ),
+    style = "height: 100px;"  # Adjust height as needed
+  ),
+  fluidRow(
+    column(6, 
+           h3("HTA outcomes files - destination"),
+           div(style = "height: 800px; overflow-y: scroll; overflow-x: scroll;", tableOutput("calls_to_be_made"))
+    ),
+    column(6, 
+           h3("MA files - source"),
+           textInput("search_callers", "Search MA", ""),
+           div(style = "height: 800px; overflow-y: scroll; overflow-x: scroll;", tableOutput("callers"))
+    )
+  )
+)
+
+# Define server logic
+server <- function(input, output, session) {
+  # Reactive values to store the data frames
+  callers <- reactiveVal()
+  calls_to_be_made <- reactiveVal()
+  calls_to_be_made_react <- reactiveVal()
+
+  # Observe file inputs and load data
+  observe({
+    req(input$callers_file)
+    callers(read.csv(input$callers_file$datapath, stringsAsFactors = FALSE))
+  })
+
+  observe({
+    req(input$calls_to_be_made_file)
+    data <- read.csv(input$calls_to_be_made_file$datapath, stringsAsFactors = FALSE)
+    if (!"Caller_id" %in% colnames(data)) {
+      data$Caller_id <- NA
+    }
+    calls_to_be_made(data)
+    calls_to_be_made_react(data)
+  })
+
+  # Filtered data for search functionality
+  filtered_callers <- reactive({
+    req(callers())
+    if (input$search_callers == "") return(callers())
+    callers() %>% 
+      filter_all(any_vars(grepl(input$search_callers, ., ignore.case = TRUE)))
+  })
+
+  filtered_calls_to_be_made <- reactive({
+    req(calls_to_be_made())
+    calls_to_be_made_react()
+  })
+
+  # Initialize draggable and droppable
+  observe({
+    req(filtered_callers(), filtered_calls_to_be_made())
+    jqui_draggable(
+      ui = "#callers td:nth-child(1)",
+      options = list(
+        revert = "invalid",
+        helper = "clone"
+      )
+    )
+    jqui_droppable(
+      ui = "#calls_to_be_made td",
+      options = list(
+        accept = ":not(.ui-state-disabled)",  # Only accept elements that are not disabled
+        drop = JS("function(event, ui) {
+                     var source_row = ui.draggable.parent().index();
+                     var dest_row = $(this).parent().index();
+                     Shiny.setInputValue('update_cells', {
+                       source_row: source_row + 1,
+                       dest_row: dest_row + 1
+                     }, {priority: 'event'});
+                   }")
+      )
+    )
+  })
+
+  observeEvent(input$update_cells, {
+    if (!is.null(input$update_cells)) {  # Ensure valid drop
+      updated_ctbm <- calls_to_be_made_react()
+      source_row <- input$update_cells$source_row
+      dest_row <- input$update_cells$dest_row
+
+      # Append the id to the right of the destination row
+      updated_ctbm[dest_row, "Caller_id"] <- filtered_callers()[source_row, 1]
+
+      calls_to_be_made_react(updated_ctbm)
+    }
+  })
+
+  output$callers <- renderTable({
+    req(filtered_callers())
+    filtered_callers()
+  }, rownames = FALSE)
+
+  output$calls_to_be_made <- renderTable({
+    req(filtered_calls_to_be_made())
+    filtered_calls_to_be_made() %>%
+      mutate(
+        .highlight = ifelse(!is.na(Caller_id) & Caller_id != "", "highlighted", "")
+      ) %>%
+      mutate_all(~ifelse(.highlight != "", paste0('<div class="highlighted">', ., '</div>'), .))
+  }, rownames = FALSE, sanitize.text.function = function(x) x)
+
+  # Download handler
+  output$downloadData <- downloadHandler(
+    filename = function() {
+      paste("resulting_data-", Sys.Date(), ".csv", sep = "")
+    },
+    content = function(file) {
+      write.csv(calls_to_be_made_react(), file, row.names = FALSE)
+    }
+  )
+}
+
+# Run the application
+shinyApp(ui, server)
+
+```
+```{r works well}
+
+# but now i need to adjust the width of the columns
+
+library(shiny)
+library(shinyjqui)
+library(tidyverse)
+
+# Define UI for application
+ui <- fluidPage(
+  tags$head(
+    tags$style(HTML("
+      table {
+        border-collapse: collapse;
+      }
+      table th, table td {
+        border: 1px solid #ddd;
+        padding: 8px;
+        text-align: left;
+      }
+      .highlighted {
+        background-color: #90EE90 !important;
+      }
+    "))
+  ),
+  titlePanel("UI functionality: Drop-on table"),
+  fluidRow(
+    column(4,
+           fileInput("calls_to_be_made_file", "Choose Calls to Be Made CSV File",
+                     accept = c("text/csv", "text/comma-separated-values,text/plain", ".csv"))
+    ),
+    column(4,
+           fileInput("callers_file", "Choose Callers CSV File",
+                     accept = c("text/csv", "text/comma-separated-values,text/plain", ".csv"))
+    ),
+    column(4,
+           downloadButton("downloadData", "Download Resulting Data")
+    ),
+    style = "height: 100px;"  # Adjust height as needed
+  ),
+  fluidRow(
+    column(6, 
+           h3("HTA outcomes files - destination"),
+           div(style = "height: 800px; overflow-y: scroll; overflow-x: scroll;", tableOutput("calls_to_be_made"))
+    ),
+    column(6, 
+           h3("MA files - source"),
+           textInput("search_callers", "Search MA", ""),
+           div(style = "height: 800px; overflow-y: scroll; overflow-x: scroll;", tableOutput("callers"))
+    )
+  )
+)
+
+# Define server logic
+server <- function(input, output, session) {
+  # Reactive values to store the data frames
+  callers <- reactiveVal()
+  calls_to_be_made <- reactiveVal()
+  calls_to_be_made_react <- reactiveVal()
+
+  # Observe file inputs and load data
+  observe({
+    req(input$callers_file)
+    callers(read.csv(input$callers_file$datapath, stringsAsFactors = FALSE))
+  })
+
+  observe({
+    req(input$calls_to_be_made_file)
+    data <- read.csv(input$calls_to_be_made_file$datapath, stringsAsFactors = FALSE)
+    if (!"Caller_id" %in% colnames(data)) {
+      data$Caller_id <- NA
+    }
+    calls_to_be_made(data)
+    calls_to_be_made_react(data)
+  })
+
+  # Filtered data for search functionality
+  filtered_callers <- reactive({
+    req(callers())
+    if (input$search_callers == "") return(callers())
+    callers() %>% 
+      filter_all(any_vars(grepl(input$search_callers, ., ignore.case = TRUE)))
+  })
+
+  filtered_calls_to_be_made <- reactive({
+    req(calls_to_be_made())
+    calls_to_be_made_react()
+  })
+
+  # Initialize draggable and droppable
+  observe({
+    req(filtered_callers(), filtered_calls_to_be_made())
+    jqui_draggable(
+      ui = "#callers td:nth-child(1)",
+      options = list(
+        revert = "invalid",
+        helper = "clone"
+      )
+    )
+    jqui_droppable(
+      ui = "#calls_to_be_made td",
+      options = list(
+        accept = ":not(.ui-state-disabled)",  # Only accept elements that are not disabled
+        drop = JS("function(event, ui) {
+                     var source_row = ui.draggable.parent().index();
+                     var dest_row = $(this).parent().index();
+                     Shiny.setInputValue('update_cells', {
+                       source_row: source_row + 1,
+                       dest_row: dest_row + 1
+                     }, {priority: 'event'});
+                   }")
+      )
+    )
+  })
+
+  observeEvent(input$update_cells, {
+    if (!is.null(input$update_cells)) {  # Ensure valid drop
+      updated_ctbm <- calls_to_be_made_react()
+      source_row <- input$update_cells$source_row
+      dest_row <- input$update_cells$dest_row
+
+      # Append the id to the right of the destination row
+      updated_ctbm[dest_row, "Caller_id"] <- filtered_callers()[source_row, 1]
+
+      calls_to_be_made_react(updated_ctbm)
+    }
+  })
+
+  output$callers <- renderTable({
+    req(filtered_callers())
+    filtered_callers()
+  }, rownames = FALSE)
+
+  output$calls_to_be_made <- renderTable({
+    req(filtered_calls_to_be_made())
+    df <- filtered_calls_to_be_made() %>%
+      mutate(
+        .highlight = ifelse(!is.na(Caller_id) & Caller_id != "", "highlighted", "")
+      )
+    
+    df[] <- lapply(df, function(x) {
+      ifelse(df$.highlight != "", paste0('<div class="highlighted">', x, '</div>'), x)
+    })
+    
+    df %>% select(-.highlight)
+  }, rownames = FALSE, sanitize.text.function = function(x) x)
+
+  # Download handler
+  output$downloadData <- downloadHandler(
+    filename = function() {
+      paste("resulting_data-", Sys.Date(), ".csv", sep = "")
+    },
+    content = function(file) {
+      write.csv(calls_to_be_made_react(), file, row.names = FALSE)
+    }
+  )
+}
+
+# Run the application
+shinyApp(ui, server)
+
+
+
+```
+
+Nothing works apparently because I open a csv file and there is no way to really control the width of columns..
+Maybe explore Excel file ?
+
+```{r resizing}
+
+
+usethis::use_github()
+
+```
+
